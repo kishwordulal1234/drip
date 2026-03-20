@@ -1,0 +1,16 @@
+# drip.yml — proxychains wrapper config
+
+# ── Chain mode (ONE = T) ─────────────────────────────
+strict_chain:   T   # all proxies in order, fail if any dead
+dynamic_chain:  F   # skip dead proxies automatically  ← default
+random_chain:   F   # random proxies each connection
+
+# ── Options ─────────────────────────────────────────
+chain_len:      3       # proxies in random mode
+timeout:        8       # connect timeout per proxy (seconds)
+quick_timeout:  3000    # ms — skip proxy if no response in 3000ms
+proxy_type:     socks5  # socks5 | socks4 | http
+proxy_dns:      T       # resolve DNS through proxy (no leaks)
+tcp_read_time:  15000   # proxychains TCP read timeout ms
+tcp_conn_time:  8000    # proxychains TCP connect timeout ms
+country_lookup: T       # show country flags
