@@ -1,8 +1,8 @@
 # drip.yml — proxychains wrapper config
 
 # ── Chain mode (ONE = T) ─────────────────────────────
-strict_chain:   T   # all proxies in order, fail if any dead
-dynamic_chain:  F   # skip dead proxies automatically  ← default
+strict_chain:   F   # Strict mode fails if one proxy is dead
+dynamic_chain:  T   # Dynamic mode skips dead proxies automatically
 random_chain:   F   # random proxies each connection
 
 # ── Options ─────────────────────────────────────────
@@ -14,3 +14,7 @@ proxy_dns:      T       # resolve DNS through proxy (no leaks)
 tcp_read_time:  15000   # proxychains TCP read timeout ms
 tcp_conn_time:  8000    # proxychains TCP connect timeout ms
 country_lookup: T       # show country flags
+
+# ── Browser mode ─────────────────────────────────────
+browser_chain_len: 1    # hops for browser mode — keep at 1 for free proxies!
+socks_only:     F       # T = drop HTTP proxies in browser mode
