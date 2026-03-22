@@ -49,19 +49,23 @@ DEFAULT_CONFIG = """\
 # drip.yml — proxychains wrapper config
 
 # ── Chain mode (ONE = T) ─────────────────────────────
-strict_chain:   F   # all proxies in order, fail if any dead
-dynamic_chain:  T   # skip dead proxies automatically  ← default
+strict_chain:   T   # all proxies in order, fail if any dead
+dynamic_chain:  F   # skip dead proxies automatically
 random_chain:   F   # random proxies each connection
 
 # ── Options ─────────────────────────────────────────
 chain_len:      3       # proxies in random mode
 timeout:        8       # connect timeout per proxy (seconds)
 quick_timeout:  3000    # ms — skip proxy if no response in 3000ms
-proxy_type:     socks5  # socks5 | socks4 | http
+proxy_type:     socks5  # socks5 | socks4 | http | auto
 proxy_dns:      T       # resolve DNS through proxy (no leaks)
 tcp_read_time:  15000   # proxychains TCP read timeout ms
 tcp_conn_time:  8000    # proxychains TCP connect timeout ms
 country_lookup: T       # show country flags
+
+# ── Browser mode ─────────────────────────────────────
+browser_chain_len: 1    # hops for browser mode — keep at 1 for free proxies!
+socks_only:     F       # T = drop HTTP proxies in browser mode
 """
 
 def load_config():
@@ -78,17 +82,19 @@ def load_config():
         v=cfg.get(k,d)
         return str(v).strip().upper() in("T","TRUE","YES","1") if not isinstance(v,bool) else v
     return {
-        "strict":   b("strict_chain"),
-        "dynamic":  b("dynamic_chain",True),
-        "random":   b("random_chain"),
-        "chain_len":max(1,int(cfg.get("chain_len",3))),
-        "timeout":  max(1.0,float(cfg.get("timeout",8))),
-        "quick_ms": max(50,int(cfg.get("quick_timeout",3000))),
-        "ptype":    str(cfg.get("proxy_type","socks5")).lower().strip(),
-        "proxy_dns":b("proxy_dns",True),
-        "tcp_read": int(cfg.get("tcp_read_time",15000)),
-        "tcp_conn": int(cfg.get("tcp_conn_time",8000)),
-        "country":  b("country_lookup",True),
+        "strict":      b("strict_chain",True),
+        "dynamic":     b("dynamic_chain"),
+        "random":      b("random_chain"),
+        "chain_len":   max(1,int(cfg.get("chain_len",3))),
+        "browser_len": max(1,int(cfg.get("browser_chain_len",3))),
+        "timeout":     max(1.0,float(cfg.get("timeout",8))),
+        "quick_ms":    max(50,int(cfg.get("quick_timeout",3000))),
+        "ptype":       str(cfg.get("proxy_type","socks5")).lower().strip(),
+        "proxy_dns":   b("proxy_dns",True),
+        "tcp_read":    int(cfg.get("tcp_read_time",15000)),
+        "tcp_conn":    int(cfg.get("tcp_conn_time",8000)),
+        "country":     b("country_lookup",True),
+        "socks_only":  b("socks_only"),
     }
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -174,6 +180,100 @@ def fast_filter(proxies, ms, workers=150):
                 fast.append(px); lats[(px["host"],px["port"])]=lat
     console.print(f"[bold #FF0000]{len(fast)}/{len(proxies)} passed[/]")
     return fast, lats
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+#  PROXY TYPE ANALYSIS + WARNING
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+_HTTP_PROXY_PORTS = {80, 81, 443, 3128, 3129, 8008, 8080, 8118, 8123,
+                     8181, 8888, 6588, 3333}
+_SOCKS_PROXY_PORTS = {1080, 1081, 1082, 1083, 9050, 9150}
+
+def classify_proxy_type(p):
+    """Classify proxy as socks5/socks4/http based on declared type + port heuristic."""
+    pt = (p.get("type") or "socks5").lower()
+    port = p.get("port", 0)
+    # Port-based override: HTTP ports always HTTP, dedicated SOCKS always SOCKS
+    if port in _HTTP_PROXY_PORTS:   return "http"
+    if port in _SOCKS_PROXY_PORTS:  return pt if pt.startswith("socks") else "socks5"
+    return pt
+
+def analyze_proxy_types(proxies):
+    """Count proxy types and return breakdown."""
+    counts = {"socks5":0,"socks4":0,"http":0,"other":0}
+    typed = []
+    for p in proxies:
+        t = classify_proxy_type(p)
+        if t in ("socks5","socks5h"):        counts["socks5"] += 1; typed.append({**p,"type":"socks5"})
+        elif t in ("socks4","socks4a"):      counts["socks4"] += 1; typed.append({**p,"type":"socks4"})
+        elif t in ("http","https","http_connect"): counts["http"] += 1; typed.append({**p,"type":"http"})
+        else:                                counts["socks5"] += 1; typed.append({**p,"type":"socks5"})
+    return typed, counts
+
+def show_proxy_type_warning(counts, socks_only=False):
+    """Show warning panel if mixed types or HTTP-only mode active."""
+    total = sum(counts.values())
+    socks_count = counts["socks5"] + counts["socks4"]
+    http_count  = counts["http"]
+    if http_count == 0 and socks_count > 0:
+        return  # all good, no warning needed
+    lines = []
+    if socks_count > 0 and http_count > 0:
+        lines.append("[bold #FF0000]⚠️  MIXED PROXY TYPES DETECTED![/bold #FF0000]")
+        lines.append("")
+        if counts["socks5"]: lines.append(f"  [bold #FF0000]{counts['socks5']}[/bold #FF0000] SOCKS5 proxies")
+        if counts["socks4"]: lines.append(f"  [bold #FF0000]{counts['socks4']}[/bold #FF0000] SOCKS4 proxies")
+        if counts["http"]:   lines.append(f"  [bold #0055FF]{counts['http']}[/bold #0055FF] HTTP proxies")
+        lines.append("")
+        if socks_only:
+            lines.append(f"  [bold #FF0000]HTTP proxies SKIPPED[/bold #FF0000] (socks_only=T in drip.yml)")
+            lines.append(f"  [dim]Using {socks_count} SOCKS proxies only[/dim]")
+        else:
+            lines.append("  [dim]HTTP + SOCKS proxies will ALL be used via pproxy auto-detection[/dim]")
+    elif http_count > 0 and socks_count == 0:
+        lines.append("[bold #FF0000]⚠️  ALL PROXIES ARE HTTP — browser chain may be unreliable[/bold #FF0000]")
+        lines.append("  [dim]HTTP proxies don't support multi-hop tunneling reliably[/dim]")
+        lines.append("  [dim]Consider using SOCKS4/SOCKS5 proxies for better results[/dim]")
+    if lines:
+        console.print(Panel(
+            "\n".join(lines),
+            title="[bold #FF0000]PROXY TYPE WARNING[/bold #FF0000]",
+            border_style="#FF0000", padding=(0,2)
+        ))
+        console.print()
+
+def select_browser_chain(proxies_typed, cfg):
+    """
+    Select the best proxies for browser chaining.
+    - In strict mode: use ALL proxies (user asked for it, cap at browser_len)
+    - In random mode: pick cfg['browser_len'] random proxies
+    - In dynamic mode: pick cfg['browser_len'] best (by latency if available)
+    Always prefer SOCKS over HTTP. Cap at browser_len.
+    socks_only=T filters out HTTP proxies first.
+    """
+    blen = cfg.get("browser_len", 3)
+    socks_only = cfg.get("socks_only", False)
+
+    pool = proxies_typed
+    if socks_only:
+        pool = [p for p in pool if p.get("type","socks5") != "http"]
+        if not pool:
+            console.print("[#FF0000]⚠️  socks_only=T but no SOCKS proxies found — using all[/]")
+            pool = proxies_typed
+
+    if cfg.get("strict"):
+        # Strict: use proxies in order, capped at browser_len
+        selected = pool[:blen]
+        console.print(f"  [dim]strict chain: using first {len(selected)} of {len(pool)} proxies[/dim]")
+    elif cfg.get("random"):
+        selected = random.sample(pool, min(blen, len(pool)))
+        console.print(f"  [dim]random chain: picked {len(selected)} random proxies[/dim]")
+    else:
+        # Dynamic: pick blen random proxies from top-20 fastest (rotation per run)
+        top = pool[:min(20, len(pool))]
+        selected = random.sample(top, min(blen, len(top)))
+        console.print(f"  [dim]dynamic chain: {len(selected)} random from top-{len(top)} fastest[/dim]")
+
+    return selected
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 #  WRITE PROXYCHAINS CONFIG
@@ -437,12 +537,7 @@ def ensure_tor():
     return False
 
 # ─────────────────────────────────────────────────────────────────────
-#  LIVE OUTPUT PARSER
-#  proxychains v3 output format:
-#    |DNS-request| google.com
-#    |DNS-response| google.com --> 142.250.117.102
-#    |S-chain|-<>-HOP1:PORT-<><>-HOP2:PORT-<><>-DEST:PORT-<><>-OK
-#    |S-chain|-<>-HOP1:PORT-<><>-DEST:PORT-<><>-timeout
+#  LIVE OUTPUT PARSER  (used for regular proxychains tool mode)
 # ─────────────────────────────────────────────────────────────────────
 def stream_with_live_log(proc, proxies, countries, cfg):
     import re
@@ -557,10 +652,8 @@ def print_usage():
         border_style="#0055FF",padding=(1,4)))
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-#  MAIN
+#  TOR BROWSER / FIREFOX HELPERS
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# ── browser config ──────────────────────────────────────────────────
-# Tor Browser is the only recommended browser for anonymous browsing
 TOR_BROWSER_CMDS = [
     "torbrowser-launcher",
     "tor-browser",
@@ -569,10 +662,7 @@ TOR_BROWSER_CMDS = [
     "/opt/tor-browser/Browser/start-tor-browser",
 ]
 
-# Browsers that WILL leak DNS/WebRTC — warn user
 LEAKY_BROWSERS = {
-    # firefox handled by --browser flag with auto-config
-    # firefox-esr handled by --browser flag with auto-config
     "chromium": "DNS and WebRTC leak — cannot be fully fixed with proxychains",
     "chrome":   "DNS and WebRTC leak — cannot be fully fixed with proxychains",
     "google-chrome": "DNS and WebRTC leak — cannot be fully fixed",
@@ -582,7 +672,6 @@ LEAKY_BROWSERS = {
     "microsoft-edge": "DNS and WebRTC leak",
 }
 
-# direct Tor Browser binary paths (skip the launcher, run browser directly)
 TOR_BROWSER_DIRECT = [
     os.path.expanduser("~/.local/share/torbrowser/tbb/x86_64/tor-browser/Browser/start-tor-browser"),
     os.path.expanduser("~/.local/share/torbrowser/tbb/x86_64/tor-browser/start-tor-browser"),
@@ -591,31 +680,17 @@ TOR_BROWSER_DIRECT = [
 ]
 
 def _make_tor_wrapper(browser_dir):
-    """
-    Write wrapper that launches Tor Browser and BLOCKS until it closes.
-    Uses wait on firefox PID directly so proxychains v3 sees a blocking process.
-    """
-    firefox   = os.path.join(browser_dir, "Browser", "firefox")
-    profile   = os.path.join(browser_dir, "Browser", "TorBrowser", "Data", "Browser", "profile.default")
-    tb_script = os.path.join(browser_dir, "start-tor-browser")
-
-    wrapper = Path("/tmp/drip_torbrowser.sh")
-
-    # browser_dir is already .../tor-browser/Browser/
-    # so firefox is directly at browser_dir/firefox
     firefox_direct   = os.path.join(browser_dir, "firefox")
     profile_direct   = os.path.join(browser_dir, "TorBrowser", "Data", "Browser", "profile.default")
-
+    tb_script = os.path.join(browser_dir, "start-tor-browser")
+    wrapper = Path("/tmp/drip_torbrowser.sh")
     if os.path.exists(firefox_direct):
-        # run firefox directly — 100% blocks until user closes window
         wrapper.write_text(
             "#!/bin/bash\n"
             f"cd \"{browser_dir}\"\n"
             f"exec ./firefox --profile \"{profile_direct}\" --no-remote 2>/dev/null\n"
         )
     elif os.path.exists(tb_script):
-        # start-tor-browser ignores --no-detach on some versions
-        # launch it then find and wait on the actual firefox process
         wrapper.write_text(
             "#!/bin/bash\n"
             f"cd \"{browser_dir}\"\n"
@@ -633,33 +708,13 @@ def _make_tor_wrapper(browser_dir):
             "FBPID=$(pgrep -f \"Browser/firefox\" 2>/dev/null | head -1)\n"
             "[ -n \"$FBPID\" ] && tail --pid=\"$FBPID\" -f /dev/null 2>/dev/null || wait\n"
         )
-
     wrapper.chmod(0o755)
     return [str(wrapper)]
 
-def _make_tb_launcher(browser_dir):
-    """
-    Write a tiny shell script to launch Tor Browser from its own directory.
-    proxychains v3 can't handle 'bash -c cd ... && ...' with spaces/args.
-    """
-    script = f"""#!/bin/bash
-cd "{browser_dir}"
-exec ./start-tor-browser "$@"
-"""
-    tmp = tempfile.NamedTemporaryFile(
-        mode="w", suffix=".sh", delete=False, prefix="drip_tb_"
-    )
-    tmp.write(script); tmp.flush(); tmp.close()
-    os.chmod(tmp.name, 0o755)
-    return [tmp.name]
-
 def find_tor_browser():
-    """Find Tor Browser — prefer direct binary over launcher."""
-    # first try direct binary (no --detach, stays alive)
     for path in TOR_BROWSER_DIRECT:
         if os.path.exists(path):
-            return path, True   # (path, is_direct)
-    # fallback to launcher
+            return path, True
     for cmd in TOR_BROWSER_CMDS:
         r = subprocess.run(["which", cmd], capture_output=True, text=True)
         if r.returncode == 0:
@@ -669,7 +724,6 @@ def find_tor_browser():
     return None, False
 
 def launch_tor_browser_setup():
-    """Install torbrowser-launcher if not present."""
     console.print("[bold #FF0000]🧅 Tor Browser — the only truly anonymous browser[/]")
     tb, is_direct = find_tor_browser()
     if tb:
@@ -698,7 +752,6 @@ def launch_tor_browser_setup():
     return None
 
 def _find_firefox():
-    """Find Firefox binary."""
     for name in ["firefox-esr","firefox"]:
         r = subprocess.run(["which", name], capture_output=True, text=True)
         if r.returncode == 0:
@@ -706,65 +759,48 @@ def _find_firefox():
     return None
 
 def _get_all_firefox_profiles():
-    """Return ALL Firefox profile directories found on this system."""
     import glob, configparser
     profiles = []
-
-    # check multiple possible base dirs
     bases = [
         os.path.expanduser("~/.mozilla/firefox"),
         os.path.expanduser("~/.firefox"),
         "/root/.mozilla/firefox",
     ]
-
     for base in bases:
-        if not os.path.exists(base):
-            continue
+        if not os.path.exists(base): continue
         ini = os.path.join(base, "profiles.ini")
         if os.path.exists(ini):
             cfg = configparser.ConfigParser()
             cfg.read(ini)
             for section in cfg.sections():
                 path = cfg.get(section, "Path", fallback=None)
-                if not path:
-                    continue
+                if not path: continue
                 if cfg.get(section, "IsRelative", fallback="0") == "1":
                     full = os.path.join(base, path)
                 else:
                     full = path
                 if os.path.isdir(full) and full not in profiles:
                     profiles.append(full)
-        # also glob for any profile folders directly
         for pattern in ["*.default-esr","*.default","*.default-release","*.esr"]:
             for p in glob.glob(os.path.join(base, pattern)):
                 if p not in profiles:
                     profiles.append(p)
-
     return profiles
 
 def _find_firefox_profile():
-    """Find default Firefox profile directory."""
     profiles = _get_all_firefox_profiles()
     return profiles[0] if profiles else None
 
 def _patch_firefox_profile(profile_dir, socks_port=None):
-    """
-    Write privacy + proxy settings into Firefox profile.
-    KEY: set network.proxy.type=1 + socks host/port so Firefox
-    KNOWS it has a proxy — then socks_remote_dns actually works.
-    """
-    port = socks_port or 9150  # fallback to Tor
+    import re
+    port = socks_port or 9150
     user_js_content = (
         "// drip.py — proxy + DNS leak fix (auto-generated)\n"
-        # ── EXPLICIT PROXY CONFIG — this is the key fix ──────────────
-        # type 1 = manual proxy — Firefox now KNOWS about the proxy
         'user_pref("network.proxy.type", 1);\n'
         f'user_pref("network.proxy.socks", "127.0.0.1");\n'
         f'user_pref("network.proxy.socks_port", {port});\n'
         'user_pref("network.proxy.socks_version", 5);\n'
-        # ── DNS through proxy — now actually works ───────────────────
         'user_pref("network.proxy.socks_remote_dns", true);\n'
-        # ── kill ALL other DNS paths ─────────────────────────────────
         'user_pref("network.trr.mode", 5);\n'
         'user_pref("network.trr.uri", "");\n'
         'user_pref("network.trr.bootstrapAddr", "");\n'
@@ -772,17 +808,12 @@ def _patch_firefox_profile(profile_dir, socks_port=None):
         'user_pref("network.dns.disablePrefetchFromHTTPS", true);\n'
         'user_pref("network.predictor.enabled", false);\n'
         'user_pref("network.prefetch-next", false);\n'
-        # ── kill WebRTC ──────────────────────────────────────────────
         'user_pref("media.peerconnection.enabled", false);\n'
         'user_pref("media.peerconnection.ice.default_address_only", true);\n'
-        # ── no direct connections ────────────────────────────────────
         'user_pref("network.proxy.no_proxies_on", "");\n'
     )
-    import re
     user_js = os.path.join(profile_dir, "user.js")
     Path(user_js).write_text(user_js_content)
-
-    # patch prefs.js too
     prefs_js = os.path.join(profile_dir, "prefs.js")
     if os.path.exists(prefs_js):
         prefs = Path(prefs_js).read_text()
@@ -801,155 +832,280 @@ def _patch_firefox_profile(profile_dir, socks_port=None):
             prefs = re.sub(rf'user_pref\("{re.escape(key)}".*?\);\n', "", prefs)
             prefs += f'user_pref("{key}", {val});\n'
         Path(prefs_js).write_text(prefs)
-
     return user_js
 
 def _patch_all_profiles(socks_port=None):
-    """Patch ALL Firefox profiles found — ensures no profile is missed."""
     profiles = _get_all_firefox_profiles()
-    if not profiles:
-        return []
+    if not profiles: return []
     patched = []
     for p in profiles:
         try:
             _patch_firefox_profile(p, socks_port)
             patched.append(p)
-        except Exception as e:
-            pass
+        except Exception: pass
     return patched
 
-def _start_local_socks5(pc_bin, pc_conf, is_v4):
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+#  PROXY PROTOCOL AUTO-DETECTION
+#  Free proxy lists often mis-label HTTP proxies as "socks5".
+#  Proxies on port 80/8080/3128/etc are almost always HTTP CONNECT.
+#  We probe each proxy directly before building the chain.
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+# Ports that are always HTTP CONNECT proxies regardless of what the list says
+_HTTP_PROXY_PORTS = {80, 81, 443, 8080, 8008, 3128, 3129, 8118, 8123,
+                     8888, 8181, 8888, 6588, 3333}
+# Ports that are always SOCKS
+_SOCKS_PROXY_PORTS = {1080, 1081, 1082, 1083, 9050, 9150}
+
+def _port_guess(port, declared):
+    """Fast port-based protocol guess, no network needed."""
+    if port in _HTTP_PROXY_PORTS:    return "http"
+    if port in _SOCKS_PROXY_PORTS:   return declared or "socks5"
+    return declared or "socks5"
+
+async def _probe_one(host, port, timeout=2.5):
     """
-    Start a local SOCKS5 server on a free port that chains through proxychains.
-    Firefox connects to this port — so it KNOWS it has a proxy.
-    Uses ssh -D trick: proxychains ssh -D port localhost (if ssh available).
-    Fallback: Python asyncio SOCKS5 forwarder.
+    Detect real proxy protocol by probing it directly.
+    Send SOCKS5 greeting — check what byte comes back:
+      0x05 → SOCKS5   |  anything else (HTTP, SOCKS4, garbage) → try HTTP CONNECT
+    Returns: "socks5" | "http" | "socks4" | None (dead/unreachable)
     """
-    import socket as _sock
-    # find free port
+    import asyncio as _ao
+    try:
+        r, w = await _ao.wait_for(_ao.open_connection(host, port), timeout)
+        w.write(bytes([5, 1, 0]))          # SOCKS5 VER=5, NMETHODS=1, NO_AUTH
+        await w.drain()
+        try:
+            data = await _ao.wait_for(r.read(2), timeout)
+        except _ao.TimeoutError:
+            w.close(); return "socks5"     # slow but no rejection = socks5
+        w.close()
+        if not data:           return "http"   # closed → HTTP that rejected SOCKS5
+        if data[0] == 5:       return "socks5"
+        if data[0] == 4:       return "socks4"
+        return "http"                          # HTTP/1.x response, starts with 'H'=0x48
+    except Exception:
+        return None                            # unreachable
+
+def detect_proxy_types(proxies):
+    """
+    Probe all proxies in parallel and return updated list with correct types.
+    Falls back to port-based guess if probe fails.
+    """
+    import asyncio as _ao
+
+    async def _probe_all():
+        tasks = [_probe_one(p["host"], p["port"]) for p in proxies]
+        return await _ao.gather(*tasks)
+
+    console.print("  [dim]probing proxy protocols...[/dim]", end=" ")
+    try:
+        results = _ao.run(_probe_all())
+    except RuntimeError:
+        # already inside event loop — use port-based guessing only
+        results = [None] * len(proxies)
+
+    updated = []
+    changes = 0
+    for p, detected in zip(proxies, results):
+        new_type = detected or _port_guess(p["port"], p.get("type","socks5"))
+        if new_type != p.get("type"):
+            changes += 1
+        updated.append({**p, "type": new_type})
+
+    if changes:
+        console.print(f"[bold #FF0000]fixed {changes} mismatched types[/]")
+    else:
+        console.print("[dim]ok[/dim]")
+    return updated
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+#  LOCAL SOCKS5 FORWARDER  (browser mode core)
+#
+#  Pure-Python implementation — zero proxychains dependency.
+#  The forwarder receives the full proxy list as JSON and implements
+#  SOCKS5/SOCKS4/HTTP CONNECT chaining entirely in asyncio.
+#  Proxy types are auto-detected before the chain is built.
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+def _start_local_socks5(proxies, cfg, tor_mode):
+    """
+    Start a pure-Python SOCKS5 server that chains through the proxy list.
+    Proxy types are auto-detected before building the chain.
+    Firefox → our local SOCKS5 (127.0.0.1:PORT) → proxy1 → proxy2 → ... → target
+    """
+    import socket as _sock, json
+
     with _sock.socket() as s:
         s.bind(("127.0.0.1", 0)); port = s.getsockname()[1]
 
-    # try: proxychains dante/microsocks/3proxy
-    # simplest: use Python to run a SOCKS5 forwarder through proxychains
-    forwarder = f"""
-import asyncio, socket, struct, sys, os, time, threading
+    # Build chain — auto-detect real protocol for each proxy first.
+    # Many free proxy lists label HTTP CONNECT proxies as "socks5".
+    if tor_mode:
+        chain = [{"host": "127.0.0.1", "port": 9050,
+                  "type": "socks5", "user": None, "pwd": None}]
+    else:
+        detected = detect_proxy_types(proxies)
+        chain = [{"host": p["host"], "port": p["port"],
+                  "type": p.get("type", "socks5"),
+                  "user": p.get("user"), "pwd": p.get("pwd")}
+                 for p in detected]
 
-N = [0]
-L = threading.Lock()
+    chain_json = json.dumps(chain)
 
-def log(ok, host, port):
-    with L:
-        N[0] += 1; n = N[0]
-    ts = time.strftime("%H:%M:%S")
-    st = "OK " if ok else "✗  "
-    # write to stderr so parent process can read it
-    sys.stderr.write(f"|DRIP| #{{n:04d}} {{ts}} {{st}} {{host}}:{{port}}\n")
-    sys.stderr.flush()
-
-async def relay(r, w):
+    # ── ensure pproxy is installed ─────────────────────────────────
     try:
-        while True:
-            d = await r.read(65536)
-            if not d: break
-            w.write(d); await w.drain()
-    except: pass
-    finally:
-        try: w.close()
-        except: pass
+        import pproxy as _pp  # noqa
+    except ImportError:
+        subprocess.run([sys.executable, "-m", "pip", "install", "pproxy",
+                        "--break-system-packages", "-q"],
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
-async def handle(cr, cw):
-    t = 10
-    host = "?"; port = 0
-    try:
-        h = await asyncio.wait_for(cr.read(2), t)
-        if h[0] != 5: return
-        await asyncio.wait_for(cr.read(h[1]), t)
-        cw.write(b"\x05\x00"); await cw.drain()
-        req = await asyncio.wait_for(cr.read(4), t)
-        if req[1] != 1: return
-        at = req[3]
-        if at == 1:
-            raw = await asyncio.wait_for(cr.read(4), t)
-            host = socket.inet_ntoa(raw)
-        elif at == 3:
-            l = (await asyncio.wait_for(cr.read(1), t))[0]
-            host = (await asyncio.wait_for(cr.read(l), t)).decode()
-        elif at == 4:
-            raw = await asyncio.wait_for(cr.read(16), t)
-            host = socket.inet_ntop(socket.AF_INET6, raw)
-        port = struct.unpack(">H", await asyncio.wait_for(cr.read(2), t))[0]
-        try:
-            pr, pw = await asyncio.wait_for(asyncio.open_connection(host, port), timeout=t)
-            cw.write(b"\x05\x00\x00\x01\x00\x00\x00\x00\x00\x00"); await cw.drain()
-            log(True, host, port)
-            await asyncio.gather(relay(cr,pw), relay(pr,cw), return_exceptions=True)
-        except:
-            cw.write(b"\x05\x05\x00\x01\x00\x00\x00\x00\x00\x00"); await cw.drain()
-            log(False, host, port)
-    except: pass
-    finally:
-        try: cw.close()
-        except: pass
+    # ── build pproxy chain URI: socks5://h1:p1__http://h2:p2__... ──
+    def _pproxy_uri(c):
+        parts = []
+        for p in c:
+            pt = (p.get("type") or "socks5").lower()
+            if pt in ("socks4","socks4a"):  proto = "socks4"
+            elif pt in ("http","https"):    proto = "http"
+            else:                           proto = "socks5"
+            parts.append(proto + "://" + p["host"] + ":" + str(p["port"]))
+        return "__".join(parts)
 
-async def main():
-    server = await asyncio.start_server(handle, "127.0.0.1", {port})
-    async with server:
-        await server.serve_forever()
+    chain_uri = _pproxy_uri(chain) if chain else ""
 
-asyncio.run(main())
-"""
-    fw_path = "/tmp/drip_socks5fw.py"
-    Path(fw_path).write_text(forwarder)
+    forwarder_code = (
+        "import asyncio, socket, struct, sys, time, threading\n"
+        "try:\n"
+        "    import pproxy\n"
+        "except ImportError:\n"
+        "    import subprocess as _sp\n"
+        "    _sp.run([sys.executable,'-m','pip','install','pproxy','--break-system-packages','-q'],\n"
+        "            stdout=open('/dev/null','w'),stderr=open('/dev/null','w'))\n"
+        "    import pproxy\n"
+        "\n"
+        "CHAIN_URI = " + repr(chain_uri) + "\n"
+        "PORT      = " + str(port) + "\n"
+        "T         = 20\n"
+        "\n"
+        "proxy_chain = pproxy.Connection(CHAIN_URI) if CHAIN_URI else None\n"
+        "N = [0]; NL = threading.Lock()\n"
+        "\n"
+        "def log(ok, host, port_, reason=''):\n"
+        "    with NL: N[0] += 1; n = N[0]\n"
+        "    ts = time.strftime('%H:%M:%S')\n"
+        "    st = 'OK ' if ok else 'X  '\n"
+        "    msg = '|DRIP| #' + f'{n:04d}' + ' ' + ts + ' ' + st + ' ' + str(host) + ':' + str(port_)\n"
+        "    if reason: msg += ' (' + str(reason)[:70] + ')'\n"
+        "    sys.stderr.write(msg + '\\n'); sys.stderr.flush()\n"
+        "\n"
+        "async def relay(src_r, dst_w):\n"
+        "    try:\n"
+        "        while True:\n"
+        "            d = await src_r.read(65536)\n"
+        "            if not d: break\n"
+        "            dst_w.write(d); await dst_w.drain()\n"
+        "    except: pass\n"
+        "    finally:\n"
+        "        try: dst_w.close()\n"
+        "        except: pass\n"
+        "\n"
+        "async def rx(r, n):\n"
+        "    return await asyncio.wait_for(r.readexactly(n), T)\n"
+        "\n"
+        "async def handle(cr, cw):\n"
+        "    dest_host = '?'; dest_port = 0\n"
+        "    try:\n"
+        "        h = await rx(cr, 2)\n"
+        "        if h[0] != 5: return\n"
+        "        await rx(cr, h[1])\n"
+        "        cw.write(bytes([5, 0])); await cw.drain()\n"
+        "        req = await rx(cr, 4)\n"
+        "        if req[1] != 1: return\n"
+        "        atyp = req[3]\n"
+        "        if   atyp == 1: dest_host = socket.inet_ntoa(await rx(cr, 4))\n"
+        "        elif atyp == 3:\n"
+        "            n_ = (await rx(cr, 1))[0]\n"
+        "            dest_host = (await rx(cr, n_)).decode()\n"
+        "        elif atyp == 4: dest_host = socket.inet_ntop(socket.AF_INET6, await rx(cr, 16))\n"
+        "        else: return\n"
+        "        dest_port = struct.unpack('>H', await rx(cr, 2))[0]\n"
+        "        hops = len(CHAIN_URI.split('__')) if CHAIN_URI else 1\n"
+        "        if proxy_chain:\n"
+        "            r, w = await asyncio.wait_for(proxy_chain.tcp_connect(dest_host, dest_port), T * hops)\n"
+        "        else:\n"
+        "            r, w = await asyncio.wait_for(asyncio.open_connection(dest_host, dest_port), T)\n"
+        "        cw.write(bytes([5, 0, 0, 1, 0, 0, 0, 0, 0, 0])); await cw.drain()\n"
+        "        log(True, dest_host, dest_port)\n"
+        "        await asyncio.gather(relay(cr, w), relay(r, cw), return_exceptions=True)\n"
+        "    except asyncio.TimeoutError:\n"
+        "        log(False, dest_host, dest_port, 'timeout')\n"
+        "        try: cw.write(bytes([5, 5, 0, 1, 0, 0, 0, 0, 0, 0])); await cw.drain()\n"
+        "        except: pass\n"
+        "    except Exception as e:\n"
+        "        log(False, dest_host, dest_port, str(e)[:70])\n"
+        "        try: cw.write(bytes([5, 5, 0, 1, 0, 0, 0, 0, 0, 0])); await cw.drain()\n"
+        "        except: pass\n"
+        "    finally:\n"
+        "        try: cw.close()\n"
+        "        except: pass\n"
+        "\n"
+        "async def main():\n"
+        "    server = await asyncio.start_server(handle, '127.0.0.1', PORT)\n"
+        "    sys.stderr.write('|DRIP_READY|\\n'); sys.stderr.flush()\n"
+        "    async with server:\n"
+        "        await server.serve_forever()\n"
+        "\n"
+        "asyncio.run(main())\n"
+    )
+
+
+
+    fw_path = tempfile.NamedTemporaryFile(
+        mode="w", suffix=".py", delete=False, prefix="drip_fw_"
+    )
+    fw_path.write(forwarder_code); fw_path.flush(); fw_path.close()
 
     env = os.environ.copy()
-    env["PROXYCHAINS_CONF_FILE"] = pc_conf
+    env["PYTHONUNBUFFERED"] = "1"
 
-    if is_v4:
-        cmd = [pc_bin, "-f", pc_conf, "-q", sys.executable, fw_path]
-    else:
-        cmd = [pc_bin, sys.executable, fw_path]
+    # Run as plain Python — no proxychains, no LD_PRELOAD, no -f flag confusion.
+    # The forwarder handles all proxy chaining itself via asyncio.
+    proc = subprocess.Popen(
+        [sys.executable, "-u", fw_path.name],
+        env=env,
+        stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+        text=True, bufsize=1
+    )
 
-    proc = subprocess.Popen(cmd, env=env,
-                            stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
-                            text=True, bufsize=1)
-    time.sleep(1.5)   # let it start
-    # verify it's listening
-    try:
-        s = _sock.create_connection(("127.0.0.1", port), timeout=2); s.close()
-        return proc, port
-    except Exception:
-        proc.terminate()
-        return None, None
+    ready_event = threading.Event()
+    ready_lines = []
 
-def launch_firefox_setup():
-    """Find Firefox, patch its profile, return launch args."""
-    ff = _find_firefox()
-    if not ff:
-        console.print("[#FF0000]❌ Firefox not found![/]")
-        console.print("[dim]  install: sudo apt install firefox-esr[/dim]")
-        return None
+    def _wait_ready():
+        for raw in iter(proc.stderr.readline, ""):
+            ready_lines.append(raw.strip())
+            if "|DRIP_READY|" in raw:
+                ready_event.set(); return
+            if "Traceback" in raw or "Error" in raw:
+                ready_event.set(); return
 
-    console.print(f"[dim]  found: {ff}[/dim]")
+    threading.Thread(target=_wait_ready, daemon=True).start()
+    ready_event.wait(timeout=4.0)
 
-    # patch ALL profiles — ensures no profile is missed
-    patched = _patch_all_profiles()
-    if patched:
-        console.print(f"[bold #FF0000]  ✅ patched {len(patched)} profile(s):[/bold #FF0000]")
-        for p in patched:
-            console.print(f"[dim]     {p}[/dim]")
-        console.print(f"[dim]     → network.proxy.socks_remote_dns = true[/dim]")
-        console.print(f"[dim]     → network.trr.mode = 5  (DoH off)[/dim]")
-        console.print(f"[dim]     → WebRTC disabled[/dim]")
-        console.print(f"[dim]     → DNS prefetch disabled[/dim]")
-    else:
-        console.print("[#FF0000]  ⚠️  no Firefox profiles found[/]")
-        console.print("[dim]     open Firefox once, close it, then rerun --browser[/dim]")
+    for _ in range(3):
+        try:
+            s = _sock.create_connection(("127.0.0.1", port), timeout=1.5)
+            s.close()
+            return proc, port, ready_lines
+        except Exception:
+            time.sleep(0.4)
 
-    return [ff]
+    proc.terminate()
+    try: os.unlink(fw_path.name)
+    except: pass
+    return None, None, []
 
 def warn_leaky_browser(tool_name):
-    """Show warning if user tries to use a leaky browser."""
     name = tool_name.lower().split("/")[-1]
     for browser, reason in LEAKY_BROWSERS.items():
         if name == browser or name.startswith(browser):
@@ -974,14 +1130,155 @@ def warn_leaky_browser(tool_name):
             return True
     return False
 
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+#  BROWSER-MODE LOG THREAD
+#  Reads from fw_proc.stderr (or Firefox's stderr in LD_PRELOAD mode)
+#  and pretty-prints every proxychains/DRIP event.
+#
+#  FIX: extracted to module level so it can be used cleanly with
+#       daemon=False and proper join() semantics.
+#  FIX: wrapped in try/except so any exception is shown, not swallowed.
+#  FIX: handles |DRIP_READY| startup message.
+#  FIX: passes through unrecognized lines as dim text so you can always
+#       see what's coming out of the process (crucial for LD_PRELOAD mode).
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+def _browser_log_thread(source_proc, proxies, countries, ok_count, fail_count,
+                        pending_lines=None):
+    """
+    Read source_proc.stderr and pretty-print all connection events.
+
+    source_proc  — the process whose stderr we read (fw_proc or Firefox)
+    proxies      — list of proxy dicts (may be empty in Tor mode)
+    countries    — geo lookup dict
+    ok_count     — shared [int] list for OK count
+    fail_count   — shared [int] list for fail count
+    pending_lines — lines already read during startup (from |DRIP_READY| wait)
+    """
+    import re
+    conn_lock = threading.Lock()
+    conn_n    = [0]
+    ip_info   = {p["host"]: countries.get(p["host"], {}) for p in proxies}
+
+    def _fmt_ip(ip):
+        ci = ip_info.get(ip, {})
+        fl = ci.get("flag", "🌐"); cc = ci.get("code", "??")
+        return f"{fl}[bold #00BFFF]{ip}[/bold #00BFFF][dim]({cc})[/dim]"
+
+    def _chain_str(chain_ips, dest_ip, dest_port):
+        hops = [_fmt_ip(ip) for ip in chain_ips]
+        if dest_ip and dest_ip not in chain_ips:
+            hops.append(f"[bold white]{dest_ip}:{dest_port}[/bold white]")
+        return " [dim]→[/dim] ".join(hops) if hops else "[dim]chain[/dim]"
+
+    def _process_line(line):
+        """Parse one stderr line and print if relevant. Returns True if handled."""
+        # ── startup marker ────────────────────────────────────────
+        if "|DRIP_READY|" in line:
+            console.print("  [bold #FF0000]✅ forwarder ready — connections will appear below[/bold #FF0000]")
+            return True
+
+        # ── proxychains chain line ────────────────────────────────
+        # In browser mode we suppress |S-chain| lines entirely.
+        # Each Firefox connection generates one |S-chain| line PER HOP (3-7
+        # lines per request) which floods the output. The |DRIP| lines below
+        # already give one clean summary line per connection with the full
+        # chain shown — that's all we need.
+        if "|S-chain|" in line:
+            return True
+
+        # ── DNS events ────────────────────────────────────────────
+        if "|DNS-request|" in line:
+            host = line.split("|DNS-request|")[-1].strip()
+            console.print(f"  [dim]DNS  → {host}[/dim]")
+            return True
+        if "|DNS-response|" in line:
+            info = line.split("|DNS-response|")[-1].strip()
+            console.print(f"  [dim]DNS  ← {info}[/dim]")
+            return True
+
+        # ── our SOCKS5 forwarder marker ───────────────────────────
+        if line.startswith("|DRIP|"):
+            parts = line.split()
+            if len(parts) < 5:
+                return True
+            ts    = parts[2]
+            st_s  = parts[3]
+            dest  = parts[4]
+            # Show failure reason (parts[5:]) — e.g. "timeout", "hop2→hop3: conn refused"
+            reason = " ".join(parts[5:]).strip("()") if len(parts) > 5 else ""
+            ok    = (st_s == "OK")
+            if ok: ok_count[0]   += 1
+            else:  fail_count[0] += 1
+            with conn_lock:
+                conn_n[0] += 1; n = conn_n[0]
+            st = "[bold #FF0000]OK [/]" if ok else "[bold #0055FF]✗  [/]"
+            if proxies:
+                sample  = proxies[:3]
+                cparts  = []
+                for p in sample:
+                    ci  = ip_info.get(p["host"], {})
+                    fl  = ci.get("flag", "🌐")
+                    cc  = ci.get("code", "??")
+                    cparts.append(
+                        f"{fl}[bold #00BFFF]{p['host']}:{p['port']}[/bold #00BFFF]"
+                        f"[dim]({cc})[/dim]"
+                    )
+                if len(proxies) > 3:
+                    cparts.append(f"[dim]+{len(proxies)-3} more[/dim]")
+                chain_s = " [dim]→[/dim] ".join(cparts)
+            else:
+                chain_s = "[dim]🧅 Tor[/dim]"
+            line_out = (
+                f"  [dim]#{n:04d} {ts}[/dim] {st}  "
+                f"{chain_s} [dim]→[/dim] [bold white]{dest}[/bold white]"
+            )
+            if reason and not ok:
+                line_out += f" [dim red]{reason}[/dim red]"
+            console.print(line_out)
+            return True
+
+        # ── proxychains banner (suppress) ─────────────────────────
+        if "ProxyChains" in line or "proxychains.sf.net" in line:
+            return True
+
+        # FIX: in LD_PRELOAD mode Firefox writes its own debug lines here.
+        # Pass them through as dim text so the user can see something.
+        # Filter out very noisy Firefox-specific spam lines.
+        noisy = (
+            "IPDL" in line or "GLib" in line or "dbus" in line or
+            "Gtk" in line or "fontconfig" in line or "libGL" in line or
+            "javascript" in line.lower() or "MOZ_" in line or
+            "console.log" in line or "nss_" in line.lower() or
+            len(line) > 300
+        )
+        if line and not noisy:
+            console.print(f"  [dim]{line[:120]}[/dim]")
+        return False
+
+    # ── main read loop ────────────────────────────────────────────────
+    try:
+        # FIX: replay any lines captured during startup (before |DRIP_READY|)
+        if pending_lines:
+            for line in pending_lines:
+                _process_line(line)
+
+        for raw in iter(source_proc.stderr.readline, ""):
+            line = raw.strip()
+            _process_line(line)
+
+    except Exception as e:
+        # FIX: never swallow exceptions silently — show them so user can debug
+        console.print(f"  [bold #FF0000]⚠️  log thread error: {e}[/bold #FF0000]")
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+#  MAIN
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 def main():
     if len(sys.argv)<2 or sys.argv[1] in ("-h","--help"):
         print_usage(); sys.exit(0)
 
-    # ── --browser flag: launch Firefox with privacy settings auto-configured
     if sys.argv[1] == "--browser":
-        # will be handled after proxychains config is written
-        # mark it so we handle it in the run section
         _BROWSER_MODE = True
         sys.argv = [sys.argv[0]] + ["firefox"] + sys.argv[2:]
     else:
@@ -990,17 +1287,14 @@ def main():
     tool_args=sys.argv[1:]
     cfg=load_config()
 
-    # ── browser leak warning ─────────────────────────────────────────
     warn_leaky_browser(tool_args[0])
 
-    # ── find proxychains ─────────────────────────────────────────────
     pc_bin,is_v4=find_proxychains()
     if not pc_bin:
         console.print("[#FF0000]❌ proxychains not found![/]")
         console.print("[dim]  install: sudo apt install proxychains4[/dim]")
         sys.exit(1)
 
-    # ── proxy vs tor mode ────────────────────────────────────────────
     if sys.stdin.isatty():
         tor_mode=True
         if not ensure_tor():
@@ -1024,134 +1318,106 @@ def main():
             try: countries=lookup_countries(ips); console.print("[#FF0000]done[/]")
             except: console.print("[dim]skipped[/dim]")
 
-    # ── write proxychains config ─────────────────────────────────────
     pc_conf=write_pc_conf(proxies,cfg,tor_mode)
 
     print_banner(cfg,proxies,tool_args,tor_mode,pc_bin,pc_conf)
 
-    # ── preflight ────────────────────────────────────────────────────
     ok,exit_ip=preflight(proxies,cfg,lats,countries,pc_bin,pc_conf,tor_mode,is_v4)
     if not ok: sys.exit(1)
 
     start=time.perf_counter()
     ok_count=[0]; fail_count=[0]
 
-    # ── live connection header ───────────────────────────────────────
     console.print(Rule(style="#FF0000"))
     console.print("  [dim]#     time      result   YOUR-IP → PROXY-HOP(s) → DESTINATION[/dim]")
     console.print(Rule(style="#0055FF")); console.print()
 
-    # ── BROWSER MODE: start local SOCKS5 → tell Firefox → launch ────
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    #  BROWSER MODE
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     if _BROWSER_MODE:
         ff = _find_firefox()
         if not ff:
             console.print("[#FF0000]❌ Firefox not found[/]")
+            console.print("[dim]  install: sudo apt install firefox-esr[/dim]")
             sys.exit(1)
 
-        # 1. start local SOCKS5 server that chains through proxychains
-        fw_proc, fw_port = _start_local_socks5(pc_bin, pc_conf, is_v4)
+        # 1. Analyze proxy types, show warning, select optimal chain
+        proxies_typed, type_counts = analyze_proxy_types(proxies)
+        show_proxy_type_warning(type_counts, cfg.get("socks_only", False))
+        browser_chain = select_browser_chain(proxies_typed, cfg)
+        console.print(
+            f"  [bold #FF0000]⛓️  browser chain: {len(browser_chain)} hop(s)[/bold #FF0000]  "
+            f"[dim](from {len(proxies)} available — browser_chain_len={cfg['browser_len']})[/dim]"
+        )
+        console.print()
+
+        # 2. Start SOCKS5 forwarder with the selected chain
+        console.print("  [dim]starting SOCKS5 forwarder...[/dim]")
+        fw_proc, fw_port, pending_lines = _start_local_socks5(browser_chain, cfg, tor_mode)
+
+        fw_env = os.environ.copy()
+
         if fw_proc and fw_port:
-            console.print(f"  [bold #FF0000]✅ local SOCKS5 forwarder on 127.0.0.1:{fw_port}[/]")
-        else:
-            # forwarder failed — patch without proxy type, launch via LD_PRELOAD
-            fw_proc = None; fw_port = None
-            console.print("  [dim]⚠️  forwarder failed — using LD_PRELOAD mode[/dim]")
-            for prof in _get_all_firefox_profiles():
-                try:
-                    Path(os.path.join(prof,"user.js")).write_text(
-                        "// drip.py dns patch\n"
-                        'user_pref("network.trr.mode", 5);\n'
-                        'user_pref("network.dns.disablePrefetch", true);\n'
-                        'user_pref("media.peerconnection.enabled", false);\n'
-                        'user_pref("network.proxy.type", 0);\n'
-                    )
-                except: pass
-
-        if fw_port:
-            # 2a. patch profiles to use our local SOCKS5 forwarder
+            console.print(f"  [bold #FF0000]✅ SOCKS5 forwarder → 127.0.0.1:{fw_port}[/bold #FF0000]")
             patched = _patch_all_profiles(socks_port=fw_port)
-            console.print(f"  [bold #FF0000]✅ patched {len(patched)} Firefox profile(s)[/]")
-            for p in patched:
-                console.print(f"     [dim]proxy: 127.0.0.1:{fw_port} | socks_remote_dns: true | WebRTC: off[/dim]")
-                break
-        # 3. launch Firefox directly (no proxychains needed — uses our SOCKS5)
-        # stream logs from the forwarder in background
-        def _stream_fw_logs(fw_proc, proxies, countries):
-            import re
-            conn_lock = threading.Lock()
-            ip_info = {p["host"]: countries.get(p["host"], {}) for p in proxies}
-            n = [0]
-            for raw in iter(fw_proc.stderr.readline, ""):
-                raw = raw.strip()
-                if not raw.startswith("|DRIP|"): continue
-                # |DRIP| #0001 15:03:14 OK  host:port
-                parts = raw.split()
-                if len(parts) < 5: continue
-                num = parts[1]; ts = parts[2]; st = parts[3]
-                dest = parts[4] if len(parts)>4 else "?"
-                ok = (st == "OK")
-                status = "[bold #FF0000]OK [/]" if ok else "[bold #0055FF]✗  [/]"
-                # show which proxies are in use
-                if proxies:
-                    sample = proxies[:2]
-                    chain_parts = []
-                    for p in sample:
-                        ci = ip_info.get(p["host"],{}); fl=ci.get("flag","🌐"); cc=ci.get("code","??")
-                        chain_parts.append(f"{fl}[bold #00BFFF]{p['host']}:{p['port']}[/][dim]({cc})[/dim]")
-                    if len(proxies)>2: chain_parts.append(f"[dim]+{len(proxies)-2}[/dim]")
-                    chain_s = " [dim]→[/dim] ".join(chain_parts)
-                else:
-                    chain_s = "[dim]chain[/dim]"
-                console.print(
-                    f"  [dim]{num} {ts}[/dim] {status}  "
-                    f"{chain_s} [dim]→[/dim] [bold white]{dest}[/bold white]"
-                )
+            if patched:
+                console.print(f"  [bold #FF0000]✅ patched {len(patched)} Firefox profile(s)[/bold #FF0000]")
+                for p in patched[:2]:
+                    console.print(f"     [dim]127.0.0.1:{fw_port} | socks_remote_dns=true | WebRTC=off[/dim]")
+            else:
+                console.print("  [#FF0000]⚠️  no Firefox profiles found — open Firefox once first[/]")
+        else:
+            console.print("  [bold #FF0000]❌ SOCKS5 forwarder failed to start[/bold #FF0000]")
+            console.print("  [dim]  check: is Python 3.7+ installed? is port available?[/dim]")
+            try: os.unlink(pc_conf)
+            except: pass
+            sys.exit(1)
 
-        # find proxychains LD_PRELOAD lib for fallback mode
-        pc_lib = None
-        for lib in ["/usr/lib/x86_64-linux-gnu/libproxychains.so.3",
-                    "/usr/lib/x86_64-linux-gnu/libproxychains.so.4",
-                    "/usr/lib/libproxychains.so.3",
-                    "/usr/lib/libproxychains.so.4"]:
-            if os.path.exists(lib): pc_lib = lib; break
+        console.print()
 
-        ff_env = os.environ.copy()
-        if not fw_proc and pc_lib:
-            # no forwarder — inject proxychains into firefox directly
-            ff_env["LD_PRELOAD"] = pc_lib
-            ff_env["PROXYCHAINS_CONF_FILE"] = pc_conf
-            console.print(f"  [dim]LD_PRELOAD: {pc_lib}[/dim]")
-
+        log_thread = None
         try:
-            proc = subprocess.Popen(
-                [ff], env=ff_env,
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            # Firefox connects to our local SOCKS5 forwarder (no proxychains needed)
+            ff_proc = subprocess.Popen(
+                [ff], env=fw_env,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
                 preexec_fn=os.setsid,
             )
-            # stream forwarder logs while browser runs
-            if fw_proc:
-                log_thread = threading.Thread(
-                    target=_stream_fw_logs,
-                    args=(fw_proc, proxies, countries),
-                    daemon=True
-                )
-                log_thread.start()
-            proc.wait()
-            rc = proc.returncode or 0
+            log_thread = threading.Thread(
+                target=_browser_log_thread,
+                args=(fw_proc, browser_chain, countries, ok_count, fail_count,
+                      pending_lines),
+                daemon=False,
+                name="drip-log"
+            )
+            log_thread.start()
+
+            ff_proc.wait()
+            rc = ff_proc.returncode or 0
+
         except KeyboardInterrupt:
             rc = 0
         finally:
-            if fw_proc:
-                try: fw_proc.terminate()
-                except: pass
+            try: fw_proc.terminate()
+            except: pass
             try: os.unlink(pc_conf)
             except: pass
 
+        if log_thread and log_thread.is_alive():
+            log_thread.join(timeout=3.0)
+
         console.print(); console.print(Rule(style="#FF0000"))
-        print_footer(time.perf_counter()-start, exit_ip, ok_count[0], fail_count[0], tor_mode, proxies)
+        print_footer(
+            time.perf_counter()-start, exit_ip,
+            ok_count[0], fail_count[0], tor_mode, proxies
+        )
         sys.exit(rc)
 
-    # ── run proxychains ──────────────────────────────────────────────
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    #  REGULAR PROXYCHAINS MODE  (non-browser tools)
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     env=os.environ.copy()
     env["PROXYCHAINS_CONF_FILE"]=pc_conf
     env["PROXYCHAINS_QUIET_MODE"]="0"
@@ -1183,7 +1449,6 @@ def main():
         console.print("\n[#FF0000]⚠️  interrupted[/]")
         rc=130
     finally:
-        # clean up temp config
         try: os.unlink(pc_conf)
         except: pass
 
