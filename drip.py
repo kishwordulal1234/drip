@@ -269,7 +269,7 @@ def select_browser_chain(proxies_typed, cfg):
         console.print(f"  [dim]random chain: picked {len(selected)} random proxies[/dim]")
     else:
         # Dynamic: pick blen random proxies from top-20 fastest (rotation per run)
-        top = pool[:min(20, len(pool))]
+        top = pool[:min(100, len(pool))]
         selected = random.sample(top, min(blen, len(top)))
         console.print(f"  [dim]dynamic chain: {len(selected)} random from top-{len(top)} fastest[/dim]")
 
@@ -991,19 +991,21 @@ def _start_local_socks5(proxies, cfg, tor_mode):
         "proxy_chain = pproxy.Connection(CHAIN_URI) if CHAIN_URI else None\n"
         "N = [0]; NL = threading.Lock()\n"
         "\n"
-        "def log(ok, host, port_, reason=''):\n"
+        "def log(ok, host, port_, reason='', tx=0, rx=0):\n"
         "    with NL: N[0] += 1; n = N[0]\n"
         "    ts = time.strftime('%H:%M:%S')\n"
         "    st = 'OK ' if ok else 'X  '\n"
         "    msg = '|DRIP| #' + f'{n:04d}' + ' ' + ts + ' ' + st + ' ' + str(host) + ':' + str(port_)\n"
+        "    if ok: msg += ' TX=' + str(tx) + ' RX=' + str(rx)\n"
         "    if reason: msg += ' (' + str(reason)[:70] + ')'\n"
         "    sys.stderr.write(msg + '\\n'); sys.stderr.flush()\n"
         "\n"
-        "async def relay(src_r, dst_w):\n"
+        "async def relay(src_r, dst_w, counter):\n"
         "    try:\n"
         "        while True:\n"
         "            d = await src_r.read(65536)\n"
         "            if not d: break\n"
+        "            counter[0] += len(d)\n"
         "            dst_w.write(d); await dst_w.drain()\n"
         "    except: pass\n"
         "    finally:\n"
@@ -1036,8 +1038,9 @@ def _start_local_socks5(proxies, cfg, tor_mode):
         "        else:\n"
         "            r, w = await asyncio.wait_for(asyncio.open_connection(dest_host, dest_port), T)\n"
         "        cw.write(bytes([5, 0, 0, 1, 0, 0, 0, 0, 0, 0])); await cw.drain()\n"
-        "        log(True, dest_host, dest_port)\n"
-        "        await asyncio.gather(relay(cr, w), relay(r, cw), return_exceptions=True)\n"
+        "        tx_c = [0]; rx_c = [0]\n"
+        "        await asyncio.gather(relay(cr, w, tx_c), relay(r, cw, rx_c), return_exceptions=True)\n"
+        "        log(True, dest_host, dest_port, tx=tx_c[0], rx=rx_c[0])\n"
         "    except asyncio.TimeoutError:\n"
         "        log(False, dest_host, dest_port, 'timeout')\n"
         "        try: cw.write(bytes([5, 5, 0, 1, 0, 0, 0, 0, 0, 0])); await cw.drain()\n"
@@ -1204,9 +1207,17 @@ def _browser_log_thread(source_proc, proxies, countries, ok_count, fail_count,
             ts    = parts[2]
             st_s  = parts[3]
             dest  = parts[4]
-            # Show failure reason (parts[5:]) — e.g. "timeout", "hop2→hop3: conn refused"
-            reason = " ".join(parts[5:]).strip("()") if len(parts) > 5 else ""
             ok    = (st_s == "OK")
+            # Parse TX=N RX=N from OK lines, reason from fail lines
+            tx_bytes = rx_bytes = 0
+            reason = ""
+            if ok and len(parts) > 5:
+                # parts[5]=TX=N parts[6]=RX=N
+                for part in parts[5:]:
+                    if part.startswith('TX='): tx_bytes = int(part[3:])
+                    elif part.startswith('RX='): rx_bytes = int(part[3:])
+            elif not ok and len(parts) > 5:
+                reason = " ".join(parts[5:]).strip("()")
             if ok: ok_count[0]   += 1
             else:  fail_count[0] += 1
             with conn_lock:
@@ -1232,6 +1243,12 @@ def _browser_log_thread(source_proc, proxies, countries, ok_count, fail_count,
                 f"  [dim]#{n:04d} {ts}[/dim] {st}  "
                 f"{chain_s} [dim]→[/dim] [bold white]{dest}[/bold white]"
             )
+            if ok and (tx_bytes or rx_bytes):
+                def _fmt(b):
+                    if b < 1024:     return f'{b}B'
+                    if b < 1048576:  return f'{b/1024:.1f}KB'
+                    return f'{b/1048576:.1f}MB'
+                line_out += f" [dim]↑{_fmt(tx_bytes)} ↓{_fmt(rx_bytes)}[/dim]"
             if reason and not ok:
                 line_out += f" [dim red]{reason}[/dim red]"
             console.print(line_out)
@@ -1329,7 +1346,7 @@ def main():
     ok_count=[0]; fail_count=[0]
 
     console.print(Rule(style="#FF0000"))
-    console.print("  [dim]#     time      result   YOUR-IP → PROXY-HOP(s) → DESTINATION[/dim]")
+    console.print("  [dim]#     time      result   PROXY-HOP(s) → DESTINATION                    ↑sent  ↓recv[/dim]")
     console.print(Rule(style="#0055FF")); console.print()
 
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
