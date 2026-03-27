@@ -78,7 +78,7 @@ This is the most important concept for using drip correctly:
 
 ```
 Does the tool use TCP?          YES → use drip_alpha.py
-Does it use raw sockets/ICMP?   YES → use ProtonVPN + drip on top
+Does it use raw sockets/ICMP?   YES → use ProtonVPN + drip_alpha.py on top
 ```
 
 | Tool | Protocol | drip works? | Need VPN? |
