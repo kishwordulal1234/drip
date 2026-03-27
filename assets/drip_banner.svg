@@ -1,0 +1,137 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 280">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#0a0a0f;stop-opacity:1"/>
+      <stop offset="50%" style="stop-color:#0d0d1a;stop-opacity:1"/>
+      <stop offset="100%" style="stop-color:#0a0a0f;stop-opacity:1"/>
+    </linearGradient>
+    <linearGradient id="redGlow" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#FF0000"/>
+      <stop offset="50%" style="stop-color:#FF3333"/>
+      <stop offset="100%" style="stop-color:#CC0000"/>
+    </linearGradient>
+    <linearGradient id="blueGlow" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#0055FF"/>
+      <stop offset="50%" style="stop-color:#00BFFF"/>
+      <stop offset="100%" style="stop-color:#003399"/>
+    </linearGradient>
+    <linearGradient id="drip1" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" style="stop-color:#FF0000;stop-opacity:1"/>
+      <stop offset="100%" style="stop-color:#FF0000;stop-opacity:0.2"/>
+    </linearGradient>
+    <linearGradient id="drip2" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" style="stop-color:#0055FF;stop-opacity:1"/>
+      <stop offset="100%" style="stop-color:#0055FF;stop-opacity:0.2"/>
+    </linearGradient>
+    <filter id="glow">
+      <feGaussianBlur stdDeviation="3" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+    <filter id="softGlow">
+      <feGaussianBlur stdDeviation="8" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+    <filter id="bigGlow">
+      <feGaussianBlur stdDeviation="15" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+    <!-- Grid pattern -->
+    <pattern id="grid" width="30" height="30" patternUnits="userSpaceOnUse">
+      <path d="M 30 0 L 0 0 0 30" fill="none" stroke="#1a1a2e" stroke-width="0.5" opacity="0.4"/>
+    </pattern>
+    <!-- Scanlines -->
+    <pattern id="scanlines" width="4" height="4" patternUnits="userSpaceOnUse">
+      <line x1="0" y1="0" x2="4" y2="0" stroke="#ffffff" stroke-width="0.3" opacity="0.03"/>
+    </pattern>
+  </defs>
+  
+  <!-- Background -->
+  <rect width="800" height="280" fill="url(#bg)"/>
+  <rect width="800" height="280" fill="url(#grid)"/>
+  <rect width="800" height="280" fill="url(#scanlines)"/>
+  
+  <!-- Border glow lines -->
+  <line x1="0" y1="1" x2="800" y2="1" stroke="#FF0000" stroke-width="2" opacity="0.6"/>
+  <line x1="0" y1="279" x2="800" y2="279" stroke="#0055FF" stroke-width="2" opacity="0.6"/>
+  <line x1="1" y1="0" x2="1" y2="280" stroke="#FF0000" stroke-width="1" opacity="0.3"/>
+  <line x1="799" y1="0" x2="799" y2="280" stroke="#0055FF" stroke-width="1" opacity="0.3"/>
+  
+  <!-- Decorative circuit lines -->
+  <g opacity="0.15" stroke="#FF0000" stroke-width="1" fill="none">
+    <path d="M 50 50 L 100 50 L 100 30 L 150 30"/>
+    <path d="M 650 50 L 700 50 L 700 30 L 750 30"/>
+    <circle cx="150" cy="30" r="3" fill="#FF0000"/>
+    <circle cx="750" cy="30" r="3" fill="#0055FF"/>
+  </g>
+  <g opacity="0.15" stroke="#0055FF" stroke-width="1" fill="none">
+    <path d="M 50 230 L 100 230 L 100 250 L 150 250"/>
+    <path d="M 650 230 L 700 230 L 700 250 L 750 250"/>
+    <circle cx="150" cy="250" r="3" fill="#0055FF"/>
+    <circle cx="750" cy="250" r="3" fill="#FF0000"/>
+  </g>
+  
+  <!-- Background glow blobs -->
+  <ellipse cx="400" cy="110" rx="250" ry="80" fill="#FF0000" opacity="0.04" filter="url(#bigGlow)"/>
+  <ellipse cx="400" cy="110" rx="180" ry="50" fill="#0055FF" opacity="0.03" filter="url(#bigGlow)"/>
+  
+  <!-- Main "DRIP" text - shadow layer -->
+  <text x="400" y="135" text-anchor="middle" font-family="'Courier New', 'Fira Code', monospace" font-size="120" font-weight="900" letter-spacing="20" fill="#FF0000" opacity="0.15" filter="url(#bigGlow)">DRIP</text>
+  
+  <!-- Main "DRIP" text - glow layer -->
+  <text x="400" y="135" text-anchor="middle" font-family="'Courier New', 'Fira Code', monospace" font-size="120" font-weight="900" letter-spacing="20" fill="url(#redGlow)" filter="url(#softGlow)" opacity="0.7">DRIP</text>
+  
+  <!-- Main "DRIP" text - primary layer -->
+  <text x="400" y="135" text-anchor="middle" font-family="'Courier New', 'Fira Code', monospace" font-size="120" font-weight="900" letter-spacing="20" fill="url(#redGlow)" filter="url(#glow)">DRIP</text>
+  
+  <!-- Drip effects from letters -->
+  <!-- D drips -->
+  <ellipse cx="240" cy="155" rx="3" ry="8" fill="url(#drip1)" opacity="0.8"/>
+  <ellipse cx="248" cy="165" rx="2" ry="12" fill="url(#drip1)" opacity="0.6"/>
+  <circle cx="248" cy="180" r="3" fill="#FF0000" opacity="0.4"/>
+  
+  <!-- R drips -->
+  <ellipse cx="335" cy="155" rx="2.5" ry="10" fill="url(#drip2)" opacity="0.7"/>
+  <ellipse cx="355" cy="160" rx="2" ry="15" fill="url(#drip1)" opacity="0.5"/>
+  <circle cx="355" cy="178" r="2.5" fill="#FF0000" opacity="0.3"/>
+  
+  <!-- I drips -->
+  <ellipse cx="435" cy="155" rx="3" ry="9" fill="url(#drip1)" opacity="0.8"/>
+  <ellipse cx="435" cy="170" rx="2" ry="6" fill="url(#drip2)" opacity="0.5"/>
+  
+  <!-- P drips -->
+  <ellipse cx="530" cy="155" rx="2.5" ry="11" fill="url(#drip2)" opacity="0.7"/>
+  <ellipse cx="545" cy="162" rx="2" ry="14" fill="url(#drip1)" opacity="0.6"/>
+  <circle cx="545" cy="179" r="3" fill="#FF0000" opacity="0.35"/>
+  <ellipse cx="560" cy="158" rx="1.5" ry="8" fill="url(#drip2)" opacity="0.4"/>
+  
+  <!-- Tagline -->
+  <text x="400" y="210" text-anchor="middle" font-family="'Segoe UI', 'Helvetica Neue', Arial, sans-serif" font-size="16" font-weight="300" fill="#00BFFF" filter="url(#glow)" letter-spacing="8" opacity="0.9">THE PROXYCHAINS REIMAGINED</text>
+  
+  <!-- Bottom decorative line -->
+  <line x1="200" y1="230" x2="600" y2="230" stroke="url(#blueGlow)" stroke-width="1" opacity="0.3"/>
+  <circle cx="200" cy="230" r="2" fill="#FF0000" opacity="0.5"/>
+  <circle cx="600" cy="230" r="2" fill="#0055FF" opacity="0.5"/>
+  
+  <!-- Version badge -->
+  <rect x="330" y="240" width="140" height="22" rx="11" fill="#0d0d1a" stroke="#FF0000" stroke-width="1" opacity="0.8"/>
+  <text x="400" y="255" text-anchor="middle" font-family="'Courier New', monospace" font-size="10" fill="#FF3333" letter-spacing="2">v7.0 ALPHA</text>
+  
+  <!-- Corner decorations -->
+  <path d="M 10 10 L 40 10 L 40 13" stroke="#FF0000" stroke-width="2" fill="none" opacity="0.6"/>
+  <path d="M 10 10 L 10 40 L 13 40" stroke="#FF0000" stroke-width="2" fill="none" opacity="0.6"/>
+  <path d="M 790 10 L 760 10 L 760 13" stroke="#0055FF" stroke-width="2" fill="none" opacity="0.6"/>
+  <path d="M 790 10 L 790 40 L 787 40" stroke="#0055FF" stroke-width="2" fill="none" opacity="0.6"/>
+  <path d="M 10 270 L 40 270 L 40 267" stroke="#0055FF" stroke-width="2" fill="none" opacity="0.6"/>
+  <path d="M 10 270 L 10 240 L 13 240" stroke="#0055FF" stroke-width="2" fill="none" opacity="0.6"/>
+  <path d="M 790 270 L 760 270 L 760 267" stroke="#FF0000" stroke-width="2" fill="none" opacity="0.6"/>
+  <path d="M 790 270 L 790 240 L 787 240" stroke="#FF0000" stroke-width="2" fill="none" opacity="0.6"/>
+</svg>
